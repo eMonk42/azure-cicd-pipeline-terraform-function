@@ -1,0 +1,99 @@
+# ASP.NET Core
+# Build and test ASP.NET Core projects targeting .NET Core.
+# Add steps that run tests, create a NuGet package, deploy, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/languages/dotnet-core
+
+trigger:
+  - azure-pipelines
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  - stage: BuildAndTest
+    jobs:
+      - job: Build
+
+        variables:
+          buildConfiguration: "Release"
+
+        steps:
+          - task: DotNetCoreCLI@2
+            inputs:
+              command: "restore"
+              feedsToUse: "select"
+
+          - script: dotnet build --configuration $(buildConfiguration)
+            displayName: "dotnet build $(buildConfiguration)"
+
+          - task: DotNetCoreCLI@2
+            inputs:
+              command: "test"
+
+      - job: PublishArtefact
+        dependsOn: Build
+        steps:
+          - task: DotNetCoreCLI@2
+            inputs:
+              command: "publish"
+              publishWebProjects: false
+              projects: "**/FirstAzureFunction.csproj"
+              arguments: "-o $(build.artifactstagingdirectory)/Build"
+
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: "terraform"
+              Contents: "**"
+              TargetFolder: "$(build.artifactstagingdirectory)/Terraform"
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: "$(Build.ArtifactStagingDirectory)"
+              ArtifactName: "drop"
+              publishLocation: "Container"
+
+  - stage: RunTerraformAndDeploy
+    jobs:
+      - job: GetArtifactAndRunTerraform
+        steps:
+          - task: DownloadBuildArtifacts@1
+            inputs:
+              buildType: "current"
+              downloadType: "single"
+              artifactName: "drop"
+              downloadPath: "$(System.ArtifactsDirectory)"
+
+          - task: TerraformInstaller@0
+            inputs:
+              terraformVersion: "1.0.3"
+
+          - task: TerraformTaskV2@2
+            inputs:
+              provider: "azurerm"
+              command: "init"
+              workingDirectory: "$(System.ArtifactsDirectory)/drop/Terraform"
+              backendServiceArm: "operations"
+              backendAzureRmResourceGroupName: "azure-menti-training"
+              backendAzureRmStorageAccountName: "thinkportlukasfirstcicd"
+              backendAzureRmContainerName: "tfstate"
+              backendAzureRmKey: "AzureFunctions.tfstate"
+
+          - task: TerraformTaskV2@2
+            inputs:
+              provider: "azurerm"
+              command: "apply"
+              workingDirectory: "$(System.ArtifactsDirectory)/drop/Terraform"
+              environmentServiceNameAzureRM: "operations"
+            env:
+              ARM_CLIENT_SECRET: $(terraform_client_secret)
+              ARM_CLIENT_ID: "d64d6a46-977d-44b5-a180-80b9b43b83ab"
+              ARM_SUBSCRIPTION_ID: "09a38f01-eb6d-4b29-8759-eaac6c6e0933"
+              ARM_TENANT_ID: "12e29f7c-8633-4490-ab9d-95ba84981681"
+
+          - task: AzureFunctionApp@1
+            inputs:
+              azureSubscription: "operations"
+              appType: "functionAppLinux"
+              appName: "uniquefunctionname04"
+              package: "$(System.ArtifactsDirectory)/**/FirstAzureFunction.zip"
+              runtimeStack: "DOTNET|3.1"
